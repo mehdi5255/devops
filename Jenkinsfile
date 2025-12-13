@@ -1,9 +1,10 @@
 pipeline {
     agent any
     
-    tools {
-        maven 'M3'
-        jdk 'JDK11'
+    environment {
+        // Définit les chemins directement
+        JAVA_HOME = '/usr/lib/jvm/java-17-openjdk-amd64'
+        PATH = "${env.JAVA_HOME}/bin:${env.PATH}:/usr/bin"
     }
     
     stages {
@@ -15,14 +16,18 @@ pipeline {
         
         stage('Build') {
             steps {
-                echo '🔨 Compilation du projet...'
-                sh 'mvn clean compile'
+                echo '🔨 Compilation...'
+                sh '''
+                    java -version
+                    mvn --version
+                    mvn clean compile
+                '''
             }
         }
         
         stage('Test') {
             steps {
-                echo '🧪 Exécution des tests...'
+                echo '🧪 Tests...'
                 sh 'mvn test'
             }
             
@@ -35,14 +40,8 @@ pipeline {
         
         stage('Package') {
             steps {
-                echo '📦 Création du package...'
+                echo '📦 Package...'
                 sh 'mvn package'
-            }
-            
-            post {
-                success {
-                    archiveArtifacts 'target/*.jar'
-                }
             }
         }
     }
@@ -50,12 +49,6 @@ pipeline {
     post {
         always {
             echo '🏁 Pipeline terminée!'
-        }
-        success {
-            echo '✅ SUCCÈS!'
-        }
-        failure {
-            echo '❌ ÉCHEC!'
         }
     }
 }
