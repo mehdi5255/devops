@@ -5,13 +5,14 @@ pipeline {
         stage('Checkout') {
             steps {
                 echo '📥 Récupération du code source...'
+                // Ajoutez ici votre checkout Git si nécessaire
+                // git 'https://github.com/votre-utilisateur/votre-repo.git'
             }
         }
         
         stage('Build') {
             steps {
                 echo '🔨 Compilation du projet...'
-                // SKIP TESTS pour éviter l'erreur MySQL
                 sh 'mvn clean compile -DskipTests'
             }
         }
@@ -21,10 +22,27 @@ pipeline {
                 echo '📦 Création du package...'
                 sh 'mvn package -DskipTests'
             }
-            
-            post {
-                success {
-                    archiveArtifacts 'target/*.jar'
+        }
+        
+        stage('Analyse SonarQube') {
+            steps {
+                echo '🔍 Analyse du code avec SonarQube...'
+                withSonarQubeEnv('SonarQube') {
+                    sh '''
+                        mvn sonar:sonar \
+                        -Dsonar.projectKey=mon-projet-java \
+                        -Dsonar.host.url=http://localhost:9000 \
+                        -Dsonar.login=sq_9dfd56b70854582df400349256dce941cf690da3
+                    '''
+                }
+            }
+        }
+        
+        stage('Quality Gate') {
+            steps {
+                echo '⚡ Attente du résultat Quality Gate...'
+                timeout(time: 1, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
@@ -33,12 +51,13 @@ pipeline {
     post {
         always {
             echo '🏁 Pipeline terminée!'
+            archiveArtifacts 'target/*.jar'
         }
         success {
-            echo '✅ SUCCÈS!'
+            echo '✅ SUCCÈS! ✅ Analyse SonarQube terminée avec succès!'
         }
         failure {
-            echo '❌ ÉCHEC!'
+            echo '❌ ÉCHEC! ❌ Pipeline ou Quality Gate échouée.'
         }
     }
 }
