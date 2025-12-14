@@ -2,34 +2,34 @@ pipeline {
     agent any
     
     environment {
-        // Docker
-        DOCKER_REGISTRY = 'docker.io'
-        DOCKER_IMAGE = 'mehdi002/spring-app'
-        DOCKER_TAG = "${BUILD_NUMBER}"
-        
-        // SonarQube
+        // SonarQube - utiliser directement le token
         SONAR_HOST_URL = 'http://localhost:9000'
-        SONAR_TOKEN = credentials('sonarqube-token')
+        SONAR_PROJECT_KEY = 'student-management'
         
         // Kubernetes
         K8S_NAMESPACE = 'devops'
         K8S_DEPLOYMENT = 'spring-app'
-        K8S_SERVICE = 'spring-service'
+        
+        // Docker
+        DOCKER_IMAGE = 'mehdi002/spring-app'
+        DOCKER_TAG = "${BUILD_NUMBER}"
     }
     
     stages {
         stage('Checkout') {
             steps {
                 echo '📥 Récupération du code source...'
-                git branch: 'main', url: 'https://github.com/mehdi5255/devops.git'
+                checkout scm
             }
         }
         
         stage('Build & Test') {
             steps {
                 echo '🔨 Compilation et tests...'
-                sh 'mvn clean compile -DskipTests'
-                sh 'mvn package -DskipTests'
+                sh '''
+                    mvn clean compile -DskipTests
+                    mvn package -DskipTests
+                '''
             }
             
             post {
@@ -43,12 +43,15 @@ pipeline {
             steps {
                 echo '🔍 Analyse de code avec SonarQube...'
                 withSonarQubeEnv('SonarQube') {
-                    sh """
-                        mvn sonar:sonar \
-                        -Dsonar.projectKey=student-management \
-                        -Dsonar.host.url=${SONAR_HOST_URL} \
-                        -Dsonar.login=${SONAR_TOKEN}
-                    """
+                    // Utiliser le token depuis les credentials
+                    withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
+                        sh """
+                            mvn sonar:sonar \
+                            -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                            -Dsonar.host.url=${SONAR_HOST_URL} \
+                            -Dsonar.login=${SONAR_TOKEN}
+                        """
+                    }
                 }
             }
         }
@@ -66,9 +69,9 @@ pipeline {
             steps {
                 echo '🐳 Construction image Docker...'
                 script {
-                    // Utiliser l'environnement Docker de Minikube
-                    sh 'eval $(minikube docker-env) || true'
-                    dockerImage = docker.build("${DOCKER_IMAGE}:${DOCKER_TAG}")
+                    // Activer Minikube Docker
+                    sh 'eval $(minikube docker-env 2>/dev/null) || echo "Minikube Docker déjà activé"'
+                    sh "docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} ."
                 }
             }
         }
@@ -77,10 +80,19 @@ pipeline {
             steps {
                 echo '🚀 Déploiement sur Kubernetes...'
                 script {
-                    // Mettre à jour l'image dans le déploiement
+                    // Tester l'accès Kubernetes d'abord
+                    sh '''
+                        kubectl get nodes
+                        kubectl get pods -n devops
+                    '''
+                    
+                    // Déployer
                     sh """
                         kubectl set image deployment/${K8S_DEPLOYMENT} \
                         spring-app=${DOCKER_IMAGE}:${DOCKER_TAG} \
+                        -n ${K8S_NAMESPACE}
+                        
+                        kubectl rollout restart deployment/${K8S_DEPLOYMENT} \
                         -n ${K8S_NAMESPACE}
                         
                         kubectl rollout status deployment/${K8S_DEPLOYMENT} \
@@ -95,10 +107,10 @@ pipeline {
                 echo '🏥 Vérification santé application...'
                 script {
                     sleep 30
-                    // Tester votre endpoint Department
-                    sh """
+                    sh '''
+                        # Tester l'API
                         curl -f http://192.168.49.2:30080/student/Depatment/getAllDepartment || exit 1
-                    """
+                    '''
                 }
             }
         }
@@ -106,26 +118,38 @@ pipeline {
     
     post {
         success {
-            echo '✅ PIPELINE RÉUSSIE ! Application déployée avec succès.'
-            sh '''
-                echo "=== RÉSUMÉ DU DÉPLOIEMENT ==="
-                echo "Application URL: http://192.168.49.2:30080/student/swagger-ui.html"
-                echo "API Test: http://192.168.49.2:30080/student/Depatment/getAllDepartment"
-                echo "Kubernetes Pods:"
-                kubectl get pods -n devops
-            '''
+            echo '✅ PIPELINE RÉUSSIE !'
+            script {
+                echo "=== RÉSUMÉ ==="
+                sh '''
+                    echo "Application: http://192.168.49.2:30080/student/swagger-ui.html"
+                    echo "Kubernetes Pods:"
+                    kubectl get pods -n devops
+                    echo "Services:"
+                    kubectl get svc -n devops
+                '''
+            }
         }
         failure {
-            echo '❌ PIPELINE ÉCHOUÉE. Vérifiez les logs.'
-            sh '''
+            echo '❌ PIPELINE ÉCHOUÉE.'
+            script {
                 echo "=== DÉBOGAGE ==="
-                kubectl get pods -n devops
-                kubectl logs -l app=spring-app -n devops --tail=50 || true
-            '''
+                sh '''
+                    echo "1. État Kubernetes:"
+                    kubectl get pods -n devops
+                    echo ""
+                    echo "2. Logs Spring Boot:"
+                    kubectl logs -l app=spring-app -n devops --tail=30 2>/dev/null || echo "Pas de logs disponibles"
+                    echo ""
+                    echo "3. État Minikube:"
+                    minikube status 2>/dev/null || echo "Minikube non disponible"
+                '''
+            }
         }
         always {
             echo '🏁 Pipeline terminée.'
-            cleanWs()  // Nettoyer le workspace
+            // cleanWs() est optionnel - décommenter si nécessaire
+            // cleanWs()
         }
     }
 }
