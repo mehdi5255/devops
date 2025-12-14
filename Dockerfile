@@ -1,4 +1,4 @@
-FROM openjdk:17-slim
+FROM openjdk:17-spring-app
 WORKDIR /app
 COPY target/*.jar app.jar
 EXPOSE 8080
