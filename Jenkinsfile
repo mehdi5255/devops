@@ -60,7 +60,7 @@ pipeline {
                 echo '🐳 Construction Docker...'
                 script {
                     sh """
-                        eval $(minikube docker-env 2>/dev/null)
+                        eval \$(minikube docker-env 2>/dev/null)
                         docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
                         docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest
                         echo "✅ Image: ${DOCKER_IMAGE}:${DOCKER_TAG}"
@@ -69,53 +69,34 @@ pipeline {
             }
         }
         
-        stage('Déploiement K8s avec TES fichiers') {
+        stage('Déploiement K8s') {
             steps {
-                echo '🚀 Déploiement avec tes fichiers K8s...'
+                echo '🚀 Déploiement Kubernetes...'
                 script {
                     sh """
-                        # Vérifier que le namespace existe
+                        # Vérifier le namespace
                         kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
                         
-                        # Option 1: Si tu as un dossier k8s/ avec tes fichiers
+                        # Vérifier les fichiers K8s
                         if [ -d "k8s" ]; then
-                            echo "📁 Utilisation des fichiers dans k8s/"
-                            
-                            # Mettre à jour l'image dans tes fichiers
-                            if [ -f "k8s/deployment.yaml" ]; then
-                                sed -i "s|image:.*|image: ${DOCKER_IMAGE}:${DOCKER_TAG}|g" k8s/deployment.yaml
-                            fi
-                            
-                            # Appliquer tous les fichiers
+                            echo "📁 Utilisation du dossier k8s/"
+                            # Mettre à jour l'image
+                            find k8s -name "*.yaml" -type f -exec sed -i "s|image:.*|image: ${DOCKER_IMAGE}:${DOCKER_TAG}|g" {} \\;
                             kubectl apply -f k8s/ -n ${K8S_NAMESPACE}
-                        
-                        # Option 2: Si tu as deployment.yaml à la racine
                         elif [ -f "deployment.yaml" ]; then
                             echo "📄 Utilisation de deployment.yaml"
                             sed -i "s|image:.*|image: ${DOCKER_IMAGE}:${DOCKER_TAG}|g" deployment.yaml
                             kubectl apply -f deployment.yaml -n ${K8S_NAMESPACE}
-                        
-                        # Option 3: Si tu as un fichier unique
-                        elif [ -f "k8s-manifests.yaml" ]; then
-                            echo "📄 Utilisation de k8s-manifests.yaml"
-                            sed -i "s|image:.*|image: ${DOCKER_IMAGE}:${DOCKER_TAG}|g" k8s-manifests.yaml
-                            kubectl apply -f k8s-manifests.yaml -n ${K8S_NAMESPACE}
-                        
-                        # Option 4: Utiliser kubectl set image
                         else
-                            echo "⚙️  Mise à jour du déploiement existant..."
-                            kubectl set image deployment/${K8S_DEPLOYMENT} \
-                                ${K8S_DEPLOYMENT}=${DOCKER_IMAGE}:${DOCKER_TAG} \
-                                -n ${K8S_NAMESPACE} || \
-                            kubectl create deployment ${K8S_DEPLOYMENT} \
-                                --image=${DOCKER_IMAGE}:${DOCKER_TAG} \
-                                -n ${K8S_NAMESPACE}
+                            echo "⚙️  Mise à jour du déploiement existant"
+                            kubectl set image deployment/${K8S_DEPLOYMENT} ${K8S_DEPLOYMENT}=${DOCKER_IMAGE}:${DOCKER_TAG} -n ${K8S_NAMESPACE} || \\
+                            kubectl create deployment ${K8S_DEPLOYMENT} --image=${DOCKER_IMAGE}:${DOCKER_TAG} -n ${K8S_NAMESPACE}
                         fi
                         
-                        # Redémarrer pour appliquer les changements
+                        # Redémarrer
                         kubectl rollout restart deployment/${K8S_DEPLOYMENT} -n ${K8S_NAMESPACE} 2>/dev/null || true
                         
-                        # Attendre le déploiement
+                        # Attendre
                         echo "⏳ Attente du déploiement..."
                         kubectl rollout status deployment/${K8S_DEPLOYMENT} -n ${K8S_NAMESPACE} --timeout=180s
                         
@@ -132,15 +113,15 @@ pipeline {
                     sh """
                         sleep 30
                         
-                        # Obtenir l'IP et le port
+                        # Obtenir l'IP et port
                         MINIKUBE_IP=\$(minikube ip 2>/dev/null || echo "192.168.49.2")
-                        NODE_PORT=\$(kubectl get svc -n ${K8S_NAMESPACE} -o jsonpath='{.items[?(@.spec.selector.app=="spring-app")].spec.ports[0].nodePort}' 2>/dev/null || echo "30080")
+                        NODE_PORT=\$(kubectl get svc -n ${K8S_NAMESPACE} -o jsonpath="{.items[?(@.spec.selector.app=='spring-app')].spec.ports[0].nodePort}" 2>/dev/null || echo "30080")
                         
                         echo "🌐 Test sur: http://\${MINIKUBE_IP}:\${NODE_PORT}/student/actuator/health"
                         
-                        # Essayer plusieurs endpoints
-                        curl -f "http://\${MINIKUBE_IP}:\${NODE_PORT}/student/actuator/health" || \
-                        curl -f "http://\${MINIKUBE_IP}:\${NODE_PORT}/student/Depatment/getAllDepartment" || \
+                        # Tester
+                        curl -f "http://\${MINIKUBE_IP}:\${NODE_PORT}/student/actuator/health" || \\
+                        curl -f "http://\${MINIKUBE_IP}:\${NODE_PORT}/student/Depatment/getAllDepartment" || \\
                         (echo "⚠️  Application en démarrage..." && exit 0)
                         
                         echo "🎉 Application opérationnelle!"
@@ -171,7 +152,7 @@ pipeline {
                 sh '''
                     echo "=== DÉBOGAGE ==="
                     kubectl get pods -A 2>/dev/null | grep -E "(devops|spring)" || echo "Pas de pods"
-                    kubectl get events -n devops --sort-by=.lastTimestamp 2>/dev/null | tail -3 || echo "Pas d'événements"
+                    kubectl get events -n devops --sort-by=.lastTimestamp 2>/dev/null | tail -3 || echo "Pas d\'événements"
                 '''
             }
         }
