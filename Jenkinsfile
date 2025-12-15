@@ -2,10 +2,15 @@ pipeline {
     agent any
     
     environment {
+        // SonarQube
         SONAR_HOST_URL = 'http://localhost:9000'
         SONAR_PROJECT_KEY = 'student-management'
+        
+        // Docker
         DOCKER_IMAGE = 'mehdi002/spring-app'
         DOCKER_TAG = "${env.BUILD_NUMBER}"
+        
+        // Kubernetes
         K8S_NAMESPACE = 'devops'
         K8S_DEPLOYMENT = 'spring-app'
     }
@@ -143,7 +148,7 @@ spec:
     matchLabels:
       app: spring-app
   strategy:
-    type: Recreate  # Plus rapide que RollingUpdate pour 1 replica
+    type: Recreate
   template:
     metadata:
       labels:
@@ -169,12 +174,12 @@ spec:
             cpu: "500m"
         ports:
         - containerPort: 8080
-        startupProbe:  # Pour démarrer plus rapidement
+        startupProbe:
           httpGet:
             path: /student/actuator/health
             port: 8080
-          failureThreshold: 30  # 30 essais
-          periodSeconds: 2      # Toutes les 2 secondes
+          failureThreshold: 30
+          periodSeconds: 2
         livenessProbe:
           httpGet:
             path: /student/actuator/health
@@ -215,7 +220,7 @@ EOF
                         echo "🔍 Vérification en cours (max 60s)..."
                         
                         # Attendre intelligemment
-                        for i in {1..30}; do  # 30 x 2s = 60s max
+                        for i in {1..30}; do
                             # Vérifier si le pod est prêt
                             READY=$(kubectl get pods -n devops -l app=spring-app -o jsonpath="{.items[0].status.containerStatuses[0].ready}" 2>/dev/null || echo "false")
                             
@@ -273,8 +278,9 @@ EOF
         }
     }
     
+    // ⚠️ CORRECTION ICI : Pas de commentaires # dans options
     options {
-        timeout(time: 15, unit: 'MINUTES')  # Réduit de 40 à 15 minutes!
+        timeout(time: 15, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '3'))
         skipDefaultCheckout()
     }
