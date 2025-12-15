@@ -1,0 +1,62 @@
+# ConfigMap pour la configuration non sensible
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spring-config
+  namespace: devops
+data:
+  SPRING_DATASOURCE_URL: jdbc:mysql://mysql-service:3306/springdb
+---
+# Secret pour les informations sensibles
+apiVersion: v1
+kind: Secret
+metadata:
+  name: spring-secret
+  namespace: devops
+type: Opaque
+data:
+  SPRING_DATASOURCE_USERNAME: c3ByaW5n  # "spring" en base64
+  SPRING_DATASOURCE_PASSWORD: c3ByaW5nMTIz  # "spring123" en base64
+---
+# Deployment Spring Boot
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spring-app
+  namespace: devops
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: spring-app
+  template:
+    metadata:
+      labels:
+        app: spring-app
+    spec:
+      containers:
+      - name: spring-app
+        # ⚠️ REMPLACER avec votre image Docker
+        image: mehdi002/spring-app:1.0
+        ports:
+        - containerPort: 8080
+        envFrom:
+        - configMapRef:
+            name: spring-config
+        - secretRef:
+            name: spring-secret
+---
+# Service Spring Boot (NodePort)
+apiVersion: v1
+kind: Service
+metadata:
+  name: spring-service
+  namespace: devops
+spec:
+  selector:
+    app: spring-app
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30080
+  type: NodePort
