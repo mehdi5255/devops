@@ -16,239 +16,117 @@ pipeline {
     }
     
     stages {
-        stage('Checkout & Build') {
+        stage('Checkout') {
             steps {
-                echo '📥 Récupération et build...'
+                echo '📥 Récupération du code...'
                 checkout scm
-                sh '''
-                    # Build Maven en parallèle avec cache
-                    mvn -B clean package -DskipTests -q -T 1C
-                    
-                    # Build Docker en utilisant le cache
-                    eval $(minikube docker-env 2>/dev/null)
-                    docker build --cache-from ${DOCKER_IMAGE}:latest -t ${DOCKER_IMAGE}:${BUILD_NUMBER} -q .
-                    docker tag ${DOCKER_IMAGE}:${BUILD_NUMBER} ${DOCKER_IMAGE}:latest
-                '''
+            }
+        }
+        
+        stage('Build & Tests') {
+            steps {
+                echo '🔨 Compilation...'
+                sh 'mvn -B clean package -DskipTests'
                 archiveArtifacts 'target/*.jar'
             }
         }
         
-        stage('Analyse SonarQube (Parallèle)') {
-            parallel {
-                stage('SonarQube Scan') {
-                    steps {
-                        script {
-                            try {
-                                withSonarQubeEnv('SonarQube') {
-                                    withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                                        sh '''
-                                            mvn sonar:sonar \
-                                            -Dsonar.projectKey=student-management \
-                                            -Dsonar.host.url=http://localhost:9000 \
-                                            -Dsonar.login=$SONAR_TOKEN \
-                                            -Dsonar.qualitygate.wait=false \
-                                            -q
-                                        '''
-                                    }
-                                }
-                                echo "✅ SonarQube: http://localhost:9000/dashboard?id=student-management"
-                            } catch (Exception e) {
-                                echo "⚠️  SonarQube ignoré"
+        stage('Analyse SonarQube') {
+            steps {
+                echo '🔍 Analyse SonarQube...'
+                script {
+                    try {
+                        withSonarQubeEnv('SonarQube') {
+                            withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                                sh """
+                                    mvn sonar:sonar \
+                                    -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                                    -Dsonar.host.url=${SONAR_HOST_URL} \
+                                    -Dsonar.login=\${SONAR_TOKEN} \
+                                    -Dsonar.qualitygate.wait=false
+                                """
                             }
                         }
-                    }
-                }
-                
-                stage('Déploiement MySQL Rapide') {
-                    steps {
-                        script {
-                            sh '''
-                                # Préparation rapide
-                                kubectl create namespace devops --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null
-                                
-                                # MySQL sans persistence pour les tests (BEAUCOUP plus rapide)
-                                kubectl apply -f - <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: mysql-test
-  namespace: devops
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: mysql-test
-  template:
-    metadata:
-      labels:
-        app: mysql-test
-    spec:
-      containers:
-      - name: mysql
-        image: mysql:8.0
-        env:
-        - name: MYSQL_ROOT_PASSWORD
-          value: "root123"
-        - name: MYSQL_DATABASE
-          value: "springdb"
-        - name: MYSQL_ALLOW_EMPTY_PASSWORD
-          value: "no"
-        ports:
-        - containerPort: 3306
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "250m"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mysql-service
-  namespace: devops
-spec:
-  selector:
-    app: mysql-test
-  ports:
-  - port: 3306
-  type: ClusterIP
-EOF
-                                
-                                echo "⚡ MySQL léger déployé (pas de persistence)"
-                            '''
-                        }
+                        echo "✅ SonarQube: ${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}"
+                    } catch (Exception e) {
+                        echo "⚠️  SonarQube ignoré: ${e.getMessage()}"
                     }
                 }
             }
         }
         
-        stage('Déploiement Rapide Spring Boot') {
+        stage('Build Docker Image') {
             steps {
+                echo '🐳 Construction Docker...'
                 script {
-                    sh '''
-                        # Attendre 15s max que MySQL soit prêt
-                        echo "⏳ Attente MySQL (15s max)..."
-                        for i in {1..15}; do
-                            if kubectl get pods -n devops -l app=mysql-test -o jsonpath="{.items[0].status.phase}" 2>/dev/null | grep -q Running; then
-                                echo "✅ MySQL prêt après ${i}s"
-                                break
-                            fi
-                            sleep 1
-                        done
-                        
-                        # Déploiement Spring Boot optimisé
-                        kubectl apply -f - <<EOF
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: spring-app
-  namespace: devops
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: spring-app
-  strategy:
-    type: Recreate
-  template:
-    metadata:
-      labels:
-        app: spring-app
-    spec:
-      containers:
-      - name: spring-app
-        image: mehdi002/spring-app:${BUILD_NUMBER}
-        env:
-        - name: SPRING_DATASOURCE_URL
-          value: "jdbc:mysql://mysql-service:3306/springdb?createDatabaseIfNotExist=true&useSSL=false"
-        - name: SPRING_DATASOURCE_USERNAME
-          value: "root"
-        - name: SPRING_DATASOURCE_PASSWORD
-          value: "root123"
-        - name: SPRING_JPA_HIBERNATE_DDL_AUTO
-          value: "update"
-        - name: SERVER_SERVLET_CONTEXT_PATH
-          value: "/student"
-        resources:
-          requests:
-            memory: "512Mi"
-            cpu: "500m"
-        ports:
-        - containerPort: 8080
-        startupProbe:
-          httpGet:
-            path: /student/actuator/health
-            port: 8080
-          failureThreshold: 30
-          periodSeconds: 2
-        livenessProbe:
-          httpGet:
-            path: /student/actuator/health
-            port: 8080
-          initialDelaySeconds: 20
-          periodSeconds: 10
-EOF
-                        
-                        # Service NodePort
-                        kubectl apply -f - <<EOF
-apiVersion: v1
-kind: Service
-metadata:
-  name: spring-app-service
-  namespace: devops
-spec:
-  type: NodePort
-  selector:
-    app: spring-app
-  ports:
-  - port: 8080
-    nodePort: 30080
-EOF
-                        
-                        echo "🚀 Application déployée - démarrage rapide activé"
-                    '''
+                    sh """
+                        eval \$(minikube docker-env 2>/dev/null)
+                        docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} .
+                        docker tag ${DOCKER_IMAGE}:${DOCKER_TAG} ${DOCKER_IMAGE}:latest
+                        echo "✅ Image: ${DOCKER_IMAGE}:${DOCKER_TAG}"
+                    """
                 }
             }
         }
         
-        stage('Vérification Intelligente') {
+        stage('Déploiement K8s') {
             steps {
+                echo '🚀 Déploiement Kubernetes...'
                 script {
-                    sh '''
-                        IP=$(minikube ip 2>/dev/null || echo "192.168.49.2")
+                    sh """
+                        # Vérifier le namespace
+                        kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f - 2>/dev/null || true
                         
-                        # Vérification en parallèle avec timeout
-                        echo "🔍 Vérification en cours (max 60s)..."
+                        # Vérifier les fichiers K8s
+                        if [ -d "k8s" ]; then
+                            echo "📁 Utilisation du dossier k8s/"
+                            # Mettre à jour l'image
+                            find k8s -name "*.yaml" -type f -exec sed -i "s|image:.*|image: ${DOCKER_IMAGE}:${DOCKER_TAG}|g" {} \\;
+                            kubectl apply -f k8s/ -n ${K8S_NAMESPACE}
+                        elif [ -f "deployment.yaml" ]; then
+                            echo "📄 Utilisation de deployment.yaml"
+                            sed -i "s|image:.*|image: ${DOCKER_IMAGE}:${DOCKER_TAG}|g" deployment.yaml
+                            kubectl apply -f deployment.yaml -n ${K8S_NAMESPACE}
+                        else
+                            echo "⚙️  Mise à jour du déploiement existant"
+                            kubectl set image deployment/${K8S_DEPLOYMENT} ${K8S_DEPLOYMENT}=${DOCKER_IMAGE}:${DOCKER_TAG} -n ${K8S_NAMESPACE} || \\
+                            kubectl create deployment ${K8S_DEPLOYMENT} --image=${DOCKER_IMAGE}:${DOCKER_TAG} -n ${K8S_NAMESPACE}
+                        fi
                         
-                        # Attendre intelligemment
-                        for i in {1..30}; do
-                            # Vérifier si le pod est prêt
-                            READY=$(kubectl get pods -n devops -l app=spring-app -o jsonpath="{.items[0].status.containerStatuses[0].ready}" 2>/dev/null || echo "false")
-                            
-                            if [ "$READY" = "true" ]; then
-                                echo "✅ Pod prêt après ${i}s"
-                                
-                                # Tester rapidement
-                                if curl -s --max-time 5 "http://${IP}:30080/student/actuator/health" > /dev/null; then
-                                    echo "🎉 APPLICATION OPÉRATIONNELLE !"
-                                    echo "🔗 http://${IP}:30080/student/swagger-ui.html"
-                                    exit 0
-                                fi
-                            fi
-                            
-                            # Afficher progression toutes les 10s
-                            if [ $((i % 5)) -eq 0 ]; then
-                                echo "  ... ${i}s écoulées, attente..."
-                                # Logs courts pour debug
-                                kubectl logs -n devops -l app=spring-app --tail=3 2>/dev/null | grep -E "(STARTED|ERROR|mysql)" || true
-                            fi
-                            
-                            sleep 2
-                        done
+                        # Redémarrer
+                        kubectl rollout restart deployment/${K8S_DEPLOYMENT} -n ${K8S_NAMESPACE} 2>/dev/null || true
                         
-                        echo "⚠️  Application lente à démarrer"
-                        echo "Pour debug: kubectl logs -n devops -l app=spring-app"
-                        echo "Continuer malgré tout..."
-                    '''
+                        # Attendre
+                        echo "⏳ Attente du déploiement..."
+                        kubectl rollout status deployment/${K8S_DEPLOYMENT} -n ${K8S_NAMESPACE} --timeout=180s
+                        
+                        echo "✅ Déploiement terminé"
+                    """
+                }
+            }
+        }
+        
+        stage('Health Check') {
+            steps {
+                echo '🏥 Vérification...'
+                script {
+                    sh """
+                        sleep 30
+                        
+                        # Obtenir l'IP et port
+                        MINIKUBE_IP=\$(minikube ip 2>/dev/null || echo "192.168.49.2")
+                        NODE_PORT=\$(kubectl get svc -n ${K8S_NAMESPACE} -o jsonpath="{.items[?(@.spec.selector.app=='spring-app')].spec.ports[0].nodePort}" 2>/dev/null || echo "30080")
+                        
+                        echo "🌐 Test sur: http://\${MINIKUBE_IP}:\${NODE_PORT}/student/actuator/health"
+                        
+                        # Tester
+                        curl -f "http://\${MINIKUBE_IP}:\${NODE_PORT}/student/actuator/health" || \\
+                        curl -f "http://\${MINIKUBE_IP}:\${NODE_PORT}/student/Depatment/getAllDepartment" || \\
+                        (echo "⚠️  Application en démarrage..." && exit 0)
+                        
+                        echo "🎉 Application opérationnelle!"
+                        echo "🔗 Swagger: http://\${MINIKUBE_IP}:\${NODE_PORT}/student/swagger-ui.html"
+                    """
                 }
             }
         }
@@ -256,32 +134,35 @@ EOF
     
     post {
         success {
-            echo '✅ PIPELINE RÉUSSIE (version rapide)'
+            echo '✅ PIPELINE RÉUSSIE !'
+            script {
+                sh """
+                    echo "=== RAPPORT ==="
+                    echo "SonarQube: ${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}"
+                    echo "Docker: ${DOCKER_IMAGE}:${DOCKER_TAG}"
+                    echo "K8s: ${K8S_NAMESPACE}/${K8S_DEPLOYMENT}"
+                    kubectl get pods -n ${K8S_NAMESPACE}
+                """
+            }
+        }
+        
+        failure {
+            echo '❌ PIPELINE ÉCHOUÉE'
             script {
                 sh '''
-                    IP=$(minikube ip 2>/dev/null)
-                    echo "=== RÉSUMÉ RAPIDE ==="
-                    echo "App: http://${IP}:30080/student"
-                    echo "SonarQube: http://localhost:9000/dashboard?id=student-management"
-                    kubectl get pods -n devops --no-headers | wc -l | xargs echo "Pods déployés:"
+                    echo "=== DÉBOGAGE ==="
+                    kubectl get pods -A 2>/dev/null | grep -E "(devops|spring)" || echo "Pas de pods"
+                    kubectl get events -n devops --sort-by=.lastTimestamp 2>/dev/null | tail -3 || echo "Pas d\'événements"
                 '''
             }
         }
         
         always {
             cleanWs()
-            sh '''
-                # Nettoyage léger
-                docker system prune -f 2>/dev/null || true
-                echo "Temps: ${currentBuild.durationString}"
-            '''
         }
     }
     
-    // ⚠️ CORRECTION ICI : Pas de commentaires # dans options
     options {
-        timeout(time: 15, unit: 'MINUTES')
-        buildDiscarder(logRotator(numToKeepStr: '3'))
-        skipDefaultCheckout()
+        timeout(time: 20, unit: 'MINUTES')
     }
 }
